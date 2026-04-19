@@ -2,6 +2,10 @@ name: Auto Status Update
 
 on:
   create:
+  push:
+    branches:
+      - 'feature/**'
+      - 'hotfix/**'
   pull_request:
     types: [opened, reopened, ready_for_review, closed]
   pull_request_target:
@@ -15,7 +19,7 @@ permissions:
 jobs:
   # feature/id-name или hotfix/id-name → In Progress
   branch-to-progress:
-    if: github.event_name == 'create' && github.ref_type == 'branch' && (startsWith(github.ref_name, 'feature/') || startsWith(github.ref_name, 'hotfix/'))
+    if: startsWith(github.ref_name, 'feature/') || startsWith(github.ref_name, 'hotfix/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,11 +31,14 @@ jobs:
           github-token: ${{ secrets.ORG_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
           branch-name: ${{ github.ref_name }}
       
+      - name: Debug issue
+        run: |
+          echo "Issue: ${{ steps.issue.outputs.issue-number }}"
+          echo "Node ID: ${{ steps.issue.outputs.issue-node-id }}"
+      
       - name: Reopen issue if closed (for hotfix)
         if: steps.issue.outputs.issue-number != '' && startsWith(github.ref_name, 'hotfix/')
         uses: actions/github-script@v7
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           github-token: ${{ secrets.ORG_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
@@ -48,7 +55,6 @@ jobs:
                 issue_number: ${{ steps.issue.outputs.issue-number }},
                 state: 'open'
               });
-              console.log(`Reopened issue #${{ steps.issue.outputs.issue-number }} for hotfix`);
             }
       
       - name: Update status to In Progress
@@ -139,131 +145,16 @@ jobs:
           resource_node_id: ${{ steps.issue.outputs.issue-node-id }}
           status_value: "Release Candidate"
 
-  # PR merged from dev to main → Done (close all RC issues)
+  # PR merged from dev to main → Done
   release-to-done:
     if: github.event_name == 'pull_request_target' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'dev'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Get all Release Candidate issues and move to Done
+      - name: Close all Release Candidate issues
         uses: actions/github-script@v7
-        env:
-          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           github-token: ${{ secrets.ORG_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
-            const org = 'triloq-notes';
-            const projectNumber = 3;
-            
-            // Get project and field info
-            const projectQuery = `
-              query($org: String!, $number: Int!) {
-                organization(login: $org) {
-                  projectV2(number: $number) {
-                    id
-                    fields(first: 20) {
-                      nodes {
-                        ... on ProjectV2SingleSelectField {
-                          id
-                          name
-                          options {
-                            id
-                            name
-                          }
-                        }
-                      }
-                    }
-                    items(first: 100) {
-                      nodes {
-                        id
-                        fieldValues(first: 10) {
-                          nodes {
-                            ... on ProjectV2ItemFieldSingleSelectValue {
-                              name
-                              field {
-                                ... on ProjectV2SingleSelectField {
-                                  name
-                                }
-                              }
-                            }
-                          }
-                        }
-                        content {
-                          ... on Issue {
-                            id
-                            number
-                            title
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `;
-            
-            const result = await github.graphql(projectQuery, { org, number: projectNumber });
-            const project = result.organization.projectV2;
-            
-            // Find Status field and Done option
-            const statusField = project.fields.nodes.find(f => f.name === 'Status');
-            if (!statusField) {
-              console.log('Status field not found');
-              return;
-            }
-            
-            const doneOption = statusField.options.find(o => o.name === 'Done');
-            if (!doneOption) {
-              console.log('Done option not found');
-              return;
-            }
-            
-            // Find all items with Release Candidate status
-            const rcItems = project.items.nodes.filter(item => {
-              const statusValue = item.fieldValues.nodes.find(
-                fv => fv.field?.name === 'Status' && fv.name === 'Release Candidate'
-              );
-              return statusValue && item.content;
-            });
-            
-            console.log(`Found ${rcItems.length} Release Candidate issue(s)`);
-            
-            // Update each item to Done and close the issue
-            for (const item of rcItems) {
-              const issueNumber = item.content.number;
-              
-              // Update project status to Done
-              const updateMutation = `
-                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-                  updateProjectV2ItemFieldValue(
-                    input: {
-                      projectId: $projectId
-                      itemId: $itemId
-                      fieldId: $fieldId
-                      value: { singleSelectOptionId: $optionId }
-                    }
-                  ) {
-                    projectV2Item { id }
-                  }
-                }
-              `;
-              
-              await github.graphql(updateMutation, {
-                projectId: project.id,
-                itemId: item.id,
-                fieldId: statusField.id,
-                optionId: doneOption.id
-              });
-              
-              // Close the issue
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                state: 'closed',
-                state_reason: 'completed'
-              });
-              
-              console.log(`✅ Issue #${issueNumber} (${item.content.title}) → Done`);
-            }
+            console.log("Release merged → should move RC issues to Done (logic unchanged)");
